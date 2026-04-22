@@ -1,4 +1,4 @@
-name: MLX LM Smoke Tests (Ultra Verbose)
+name: MLX Swift iPhone App Build (Ultra Verbose)
 
 on:
   workflow_dispatch:
@@ -10,47 +10,28 @@ permissions:
   contents: read
 
 concurrency:
-  group: mlx-lm-ultra-verbose-${{ github.workflow }}-${{ github.ref }}
+  group: mlx-swift-ios-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  smoke:
-    name: MLX LM ultra verbose regression on macOS
+  build-ios-app:
+    name: Build MLX Swift iPhone app with Xcode
     runs-on: macos-15
-    timeout-minutes: 150
+    timeout-minutes: 120
 
     env:
-      PYTHONUNBUFFERED: "1"
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      FORCE_COLOR: "1"
-      HF_HOME: ${{ github.workspace }}/.hf-home
-      HUGGINGFACE_HUB_CACHE: ${{ github.workspace }}/.hf-home/hub
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      TOKENIZERS_PARALLELISM: "false"
-      TRANSFORMERS_VERBOSITY: info
-      PYTEST_ADDOPTS: >-
-        -vvv
-        -s
-        --full-trace
-        --tb=long
-        -rA
-        --durations=50
-        --maxfail=1
-        --showlocals
-        --color=yes
-        -o log_cli=true
-        -o log_cli_level=DEBUG
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      NSUnbufferedIO: "YES"
+      XCODE_SCHEME: MLXChatExample
+      XCODE_CONFIGURATION: Debug
+      IOS_SIMULATOR_NAME: iPhone 16
+      IOS_SIMULATOR_OS: latest
 
     steps:
       - name: Check out wrapper repository
         uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Show runner details
+      - name: Show runner and Xcode details
         shell: bash
         run: |
           set -euxo pipefail
@@ -58,255 +39,166 @@ jobs:
           uname -a
           sw_vers
           sysctl -n machdep.cpu.brand_string || true
-          xcodebuild -version || true
-          python --version
-          python -m pip --version
-          which python
-          which pip
+          echo "=== XCODE ==="
+          xcode-select -p
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devicetypes | sed -n '1,120p'
+          echo "=== FILESYSTEM ==="
           pwd
           ls -la
-          echo "=== ENV ==="
-          env | sort
 
-      - name: Show shell capabilities
+      - name: Clone MLX Swift examples repository
         shell: bash
         run: |
           set -euxo pipefail
-          echo "BASH_VERSION=${BASH_VERSION:-unknown}"
-          bash --version
-          git --version
-          curl --version
-          unzip -v
-
-      - name: Clone upstream MLX LM repository
-        shell: bash
-        run: |
-          set -euxo pipefail
-          git clone --depth=1 https://github.com/ml-explore/mlx-lm.git
-          cd mlx-lm
+          git clone --depth=1 https://github.com/ml-explore/mlx-swift-examples.git
+          cd mlx-swift-examples
           echo "=== GIT INFO ==="
           git rev-parse HEAD
           git status
           git log -1 --stat
           echo "=== TOP LEVEL ==="
           ls -la
+          echo "=== PROJECT-LIKE FILES ==="
+          find . \( -name "*.xcodeproj" -o -name "*.xcworkspace" -o -name "Package.swift" \) | sort
+
+      - name: Inspect repository layout ultra verbosely
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+          echo "=== DIRECTORY PREVIEW ==="
+          find . -maxdepth 3 -type d | sort | sed -n '1,300p'
           echo "=== FILE PREVIEW ==="
-          find . -maxdepth 2 -type f | sort | sed -n '1,400p'
+          find . -maxdepth 3 -type f | sort | sed -n '1,400p'
 
-      - name: Upgrade packaging tools
+      - name: Resolve Xcode project or workspace
+        id: resolve_project
         shell: bash
         run: |
           set -euxo pipefail
-          python -m pip install --upgrade pip setuptools wheel
-          python -m pip --version
+          cd mlx-swift-examples
 
-      - name: Install MLX LM and test dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-lm
-          python -m pip install pytest pytest-xdist pytest-timeout unittest-xml-reporting
-          python -m pip install -e ".[test]"
-          echo "=== INSTALLED PACKAGES ==="
-          python -m pip list
+          WORKSPACE="$(find . -maxdepth 3 -name "*.xcworkspace" | sort | head -n 1 || true)"
+          PROJECT="$(find . -maxdepth 3 -name "*.xcodeproj" | sort | head -n 1 || true)"
 
-      - name: Download upstream test fixtures
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-lm
-          echo "=== DOWNLOADING TEST FIXTURES ==="
-          curl --fail --show-error --location \
-            --output test_data.zip \
-            https://github.com/ml-explore/mlx-lm/releases/download/test_data/test_data.zip
-          ls -lah test_data.zip
-          unzip -o test_data.zip
-          echo "=== POST-UNZIP TOP LEVEL ==="
-          ls -lah
-          echo "=== TEST FILES ==="
-          find tests -type f | sort
+          echo "Resolved workspace: ${WORKSPACE:-<none>}"
+          echo "Resolved project: ${PROJECT:-<none>}"
 
-      - name: Populate Hugging Face cache from bundled fixtures
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-lm
-          mkdir -p "$HF_HOME"
-          mkdir -p "$HUGGINGFACE_HUB_CACHE"
-
-          if [ -d hub ]; then
-            rm -rf "$HUGGINGFACE_HUB_CACHE"
-            mkdir -p "$(dirname "$HUGGINGFACE_HUB_CACHE")"
-            cp -R hub "$HUGGINGFACE_HUB_CACHE"
+          if [ -n "${WORKSPACE}" ]; then
+            echo "container_type=workspace" >> "$GITHUB_OUTPUT"
+            echo "container_path=${WORKSPACE}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${PROJECT}" ]; then
+            echo "container_type=project" >> "$GITHUB_OUTPUT"
+            echo "container_path=${PROJECT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No .xcworkspace or .xcodeproj found." >&2
+            exit 1
           fi
 
-          if [ -d datasets ]; then
-            cp -R datasets "$HF_HOME/" || true
+      - name: Show schemes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd mlx-swift-examples
+
+          if [ "${{ steps.resolve_project.outputs.container_type }}" = "workspace" ]; then
+            xcodebuild -list -workspace "${{ steps.resolve_project.outputs.container_path }}"
+          else
+            xcodebuild -list -project "${{ steps.resolve_project.outputs.container_path }}"
           fi
 
-          echo "=== HF CACHE ROOT ==="
-          ls -lah "$HF_HOME"
-          du -sh "$HF_HOME" || true
-          du -sh "$HUGGINGFACE_HUB_CACHE" || true
-
-      - name: Remove huge downloaded zip after extraction
+      - name: Boot iPhone simulator
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-lm
-          rm -f test_data.zip
-          ls -lah
 
-      - name: Enforce offline mode for tests
+          DEVICE_UDID="$(xcrun simctl list devices available | grep "${IOS_SIMULATOR_NAME}" | head -n 1 | sed -E 's/.*\(([-A-F0-9]+)\).*/\1/' || true)"
+
+          if [ -z "${DEVICE_UDID}" ]; then
+            echo "Could not find simulator named ${IOS_SIMULATOR_NAME}" >&2
+            xcrun simctl list devices available
+            exit 1
+          fi
+
+          echo "Using simulator UDID: ${DEVICE_UDID}"
+          xcrun simctl boot "${DEVICE_UDID}" || true
+          xcrun simctl bootstatus "${DEVICE_UDID}" -b
+          xcrun simctl list devices | sed -n '1,200p'
+
+      - name: Resolve Swift packages
         shell: bash
         run: |
           set -euxo pipefail
-          {
-            echo "HF_HUB_OFFLINE=1"
-            echo "TRANSFORMERS_OFFLINE=1"
-            echo "HF_DATASETS_OFFLINE=1"
-          } >> "$GITHUB_ENV"
-          echo "Offline mode variables written to GITHUB_ENV"
+          cd mlx-swift-examples
 
-      - name: Show collected tests
+          if [ "${{ steps.resolve_project.outputs.container_type }}" = "workspace" ]; then
+            xcodebuild \
+              -resolvePackageDependencies \
+              -workspace "${{ steps.resolve_project.outputs.container_path }}" \
+              -scheme "${XCODE_SCHEME}"
+          else
+            xcodebuild \
+              -resolvePackageDependencies \
+              -project "${{ steps.resolve_project.outputs.container_path }}" \
+              -scheme "${XCODE_SCHEME}"
+          fi
+
+      - name: Build iPhone app for iOS Simulator ultra verbosely
         shell: bash
         run: |
           set -euxo pipefail
-          cd mlx-lm
-          python -m pytest tests --collect-only -vv
+          cd mlx-swift-examples
 
-      - name: Run stable extended verbose pytest subset
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd mlx-lm
-          echo "=== RUNNING STABLE EXTENDED VERBOSE PYTEST SUBSET ==="
-          echo "Offline mode:"
-          echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
-          echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
-          echo "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-unset}"
-          printf '%s\n' \
-            tests/test_chat.py \
-            tests/test_sample_utils.py \
-            tests/test_tokenizers.py \
-            tests/test_tool_parsing.py \
-            tests/test_losses.py \
-            tests/test_prompt_cache.py \
-            tests/test_server.py \
-            tests/test_utils.py \
-            tests/test_generate.py
+          DESTINATION="platform=iOS Simulator,name=${IOS_SIMULATOR_NAME},OS=${IOS_SIMULATOR_OS}"
 
-          python -m pytest \
-            tests/test_chat.py \
-            tests/test_sample_utils.py \
-            tests/test_tokenizers.py \
-            tests/test_tool_parsing.py \
-            tests/test_losses.py \
-            tests/test_prompt_cache.py \
-            tests/test_server.py \
-            tests/test_utils.py \
-            tests/test_generate.py
+          if [ "${{ steps.resolve_project.outputs.container_type }}" = "workspace" ]; then
+            xcodebuild \
+              -workspace "${{ steps.resolve_project.outputs.container_path }}" \
+              -scheme "${XCODE_SCHEME}" \
+              -configuration "${XCODE_CONFIGURATION}" \
+              -destination "${DESTINATION}" \
+              -derivedDataPath "${PWD}/DerivedData" \
+              -resultBundlePath "${PWD}/BuildResults.xcresult" \
+              -skipMacroValidation \
+              -showBuildTimingSummary \
+              -verbose \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          else
+            xcodebuild \
+              -project "${{ steps.resolve_project.outputs.container_path }}" \
+              -scheme "${XCODE_SCHEME}" \
+              -configuration "${XCODE_CONFIGURATION}" \
+              -destination "${DESTINATION}" \
+              -derivedDataPath "${PWD}/DerivedData" \
+              -resultBundlePath "${PWD}/BuildResults.xcresult" \
+              -skipMacroValidation \
+              -showBuildTimingSummary \
+              -verbose \
+              CODE_SIGNING_ALLOWED=NO \
+              build
+          fi
 
-      - name: Verify MLX LM can load and generate with cached Qwen 0.5B
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd mlx-lm
-          echo "=== QWEN LOAD/GENERATE CHECK ==="
-          echo "HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-unset}"
-          echo "TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-unset}"
-          echo "HF_DATASETS_OFFLINE=${HF_DATASETS_OFFLINE:-unset}"
-
-          python - <<'PY'
-          import os
-          import sys
-          import traceback
-
-          print("=== PYTHON RUNTIME INFO ===")
-          print("python:", sys.version)
-          print("cwd:", os.getcwd())
-          print("HF_HOME:", os.environ.get("HF_HOME"))
-          print("HUGGINGFACE_HUB_CACHE:", os.environ.get("HUGGINGFACE_HUB_CACHE"))
-          print("HF_HUB_OFFLINE:", os.environ.get("HF_HUB_OFFLINE"))
-          print("TRANSFORMERS_OFFLINE:", os.environ.get("TRANSFORMERS_OFFLINE"))
-          print("HF_DATASETS_OFFLINE:", os.environ.get("HF_DATASETS_OFFLINE"))
-
-          from mlx_lm import load, generate
-
-          # This model is present in the bundled fixture cache.
-          model_id = "mlx-community/Qwen1.5-0.5B-Chat-4bit"
-          print(f"=== LOADING MODEL: {model_id} ===")
-
-          try:
-              model, tokenizer = load(model_id)
-          except Exception:
-              print("MODEL LOAD FAILED")
-              traceback.print_exc()
-              raise
-
-          print("MODEL LOAD SUCCEEDED")
-          print("model type:", type(model))
-          print("tokenizer type:", type(tokenizer))
-
-          prompt = "Reply with exactly: OK"
-          print("=== PROMPT ===")
-          print(prompt)
-
-          try:
-              output = generate(
-                  model,
-                  tokenizer,
-                  prompt=prompt,
-                  max_tokens=12,
-                  verbose=True,
-              )
-          except Exception:
-              print("GENERATION FAILED")
-              traceback.print_exc()
-              raise
-
-          print("=== GENERATED TEXT BEGIN ===")
-          print(output)
-          print("=== GENERATED TEXT END ===")
-
-          if not isinstance(output, str):
-              raise RuntimeError(f"Expected string output, got: {type(output)}")
-
-          if not output.strip():
-              raise RuntimeError("Generation returned empty output")
-
-          print("Cached Qwen 0.5B load/generate verification passed.")
-          PY
-
-      - name: Show compact Hugging Face cache summary
+      - name: Show build products
         if: always()
         shell: bash
         run: |
           set -euxo pipefail
-          echo "=== HF_HOME SUMMARY ==="
-          du -sh "$HF_HOME" || true
-          du -sh "$HUGGINGFACE_HUB_CACHE" || true
-          echo "=== TOP-LEVEL HF CACHE ENTRIES ==="
-          find "$HUGGINGFACE_HUB_CACHE" -maxdepth 2 -type d | sort | sed -n '1,80p' || true
+          cd mlx-swift-examples
+          echo "=== DERIVED DATA ==="
+          du -sh DerivedData || true
+          find DerivedData -maxdepth 6 \( -name "*.app" -o -name "*.framework" -o -name "*.swiftmodule" \) | sort | sed -n '1,300p' || true
+          echo "=== XCRESULT ==="
+          ls -lah BuildResults.xcresult || true
 
-      - name: Collect logs on failure
-        if: failure()
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd mlx-lm
-          echo "=== FAILURE DIAGNOSTICS ==="
-          python --version
-          python -m pip list
-          env | sort
-          python -m pytest tests --collect-only -vv || true
-          find . -maxdepth 4 -type f | sort | sed -n '1,800p' || true
-
-      - name: Upload lightweight artifacts
+      - name: Upload build artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mlx-lm-ultra-verbose-artifacts
+          name: mlx-swift-ios-build-artifacts
           if-no-files-found: ignore
           path: |
-            mlx-lm/.pytest_cache
+            mlx-swift-examples/BuildResults.xcresult
+            mlx-swift-examples/DerivedData
