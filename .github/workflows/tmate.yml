@@ -1,0 +1,68 @@
+name: Self Contained Debug Demo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug-demo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Show runner info
+        run: |
+          echo "Runner OS: $RUNNER_OS"
+          echo "Working directory: $PWD"
+          uname -a
+          ls -la
+
+      - name: Create files for inspection
+        shell: bash
+        run: |
+          cat > app.txt <<'EOF'
+          hello from the runner
+          this file exists so you can inspect it in the debug shell
+          EOF
+
+          cat > broken.sh <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo "Starting script"
+          echo "Current dir: $(pwd)"
+          echo "Date: $(date)"
+          echo "Listing files:"
+          ls -la
+
+          echo "Contents of app.txt:"
+          cat app.txt
+
+          echo "Now failing on purpose so debugging is needed"
+          MISSING_FILE="does-not-exist.txt"
+          cat "$MISSING_FILE"
+
+          echo "You will never see this line"
+          EOF
+
+          chmod +x broken.sh
+
+      - name: Run intentionally broken step
+        shell: bash
+        run: |
+          bash -x ./broken.sh
+
+      - name: Open interactive debug shell after failure
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+
+      - name: Helpful debug hints
+        if: ${{ failure() }}
+        run: |
+          echo "Once connected to tmate, try:"
+          echo "  pwd"
+          echo "  ls -la"
+          echo "  cat app.txt"
+          echo "  bash -x ./broken.sh"
+          echo "  sed -n '1,200p' broken.sh"
+          echo "  touch does-not-exist.txt && bash -x ./broken.sh"
